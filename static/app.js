@@ -19,6 +19,7 @@ async function api(path, options = {}) {
   return res.json();
 }
 function esc(s){return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function escAttr(s){return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 function logout(){localStorage.removeItem('gtep_token');localStorage.removeItem('gtep_role');token='';role='';if (adminTimer) clearInterval(adminTimer);renderLogin();}
 function msg(text, err=false){return `<div class="msg ${err?'err':''}">${esc(text)}</div>`}
 
@@ -149,7 +150,21 @@ function rankTable(items, type){
   return `<table><thead><tr>${type==='student'?'<th>순위</th><th>학생</th><th>팀</th><th>점수</th><th>강점</th>':'<th>순위</th><th>팀</th><th>점수</th><th>응답수</th>'}</tr></thead><tbody>` + items.slice(0,12).map(x => type==='student' ? `<tr><td>${x.rank}</td><td>${esc(x.name)}</td><td>${esc(x.job_team)}<br>${esc(x.fair_team)}</td><td><b>${x.score}</b></td><td>${esc((x.tags||[]).join(', '))}</td></tr>` : `<tr><td>${x.rank}</td><td>${esc(x.team)}</td><td><b>${x.score}</b></td><td>${x.responses}</td></tr>`).join('') + '</tbody></table>';
 }
 function statusTable(items){
-  return `<table><thead><tr><th>학생</th><th>직무팀</th><th>박람회팀</th><th>제출</th></tr></thead><tbody>` + items.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.job_team)}</td><td>${esc(s.fair_team)}</td><td>${s.submitted_at?'<span class="good">완료</span><br><span class="small muted">'+esc(s.submitted_at)+'</span>':'<span class="warn">미제출</span>'}</td></tr>`).join('') + '</tbody></table>';
+  return `<table><thead><tr><th>학생</th><th>직무팀</th><th>박람회팀</th><th>상태</th><th>관리</th></tr></thead><tbody>` + items.map(s=>{
+    const status = s.submitted_at
+      ? '<span class="good">최종제출 완료</span><br><span class="small muted">'+esc(s.submitted_at)+'</span>'
+      : (s.saved_count > 0 ? '<span class="warn">임시저장/작성중</span><br><span class="small muted">저장 항목 '+s.saved_count+'개</span>' : '<span class="muted">미작성</span>');
+    const action = s.submitted_at ? `<button class="secondary small-btn" onclick="reopenStudent('${escAttr(s.student_id)}','${escAttr(s.name)}')">임시저장으로 전환</button>` : '<span class="small muted">-</span>';
+    return `<tr><td>${esc(s.name)}</td><td>${esc(s.job_team)}</td><td>${esc(s.fair_team)}</td><td>${status}</td><td>${action}</td></tr>`;
+  }).join('') + '</tbody></table>';
+}
+async function reopenStudent(studentId, name){
+  if(!confirm(name + ' 학생의 최종제출 상태를 임시저장/작성중으로 되돌릴까요? 저장된 응답은 삭제되지 않으며 학생이 다시 로그인해 수정 후 최종제출할 수 있습니다.')) return;
+  try {
+    const res = await api('/api/admin/reopen', {method:'POST', body: JSON.stringify({student_id: studentId})});
+    alert(res.message || '임시저장 상태로 변경했습니다.');
+    await loadAdmin();
+  } catch(e){ alert(e.message); }
 }
 async function loadResponses(){
   const box = $('#responsesBox'); box.innerHTML = msg('원문을 불러오는 중입니다.');

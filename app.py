@@ -94,6 +94,9 @@ class ResponseIn(BaseModel):
 class SubmitIn(BaseModel):
     responses: list[ResponseIn]
 
+class ReopenIn(BaseModel):
+    student_id: str
+
 
 def normalize_database_url(url: str) -> str:
     """Supabase requires SSL. Add sslmode=require when the URL looks remote and has no sslmode."""
@@ -537,13 +540,28 @@ def admin_dashboard(authorization: Optional[str] = Header(default=None)) -> dict
     avg_chars = round(sum(r["char_count"] for r in rows) / len(rows), 1) if rows else 0
     avg_time = round(sum(r["writing_time_sec"] for r in rows) / len(rows) / 60, 1) if rows else 0
     low_reliability = sum(1 for r in rows if r["reliability_score"] < 50)
-    by_status = [{"student_id": s["student_id"], "name": s["name"], "job_team": s["job_team"], "fair_team": s["fair_team"], "submitted_at": s.get("submitted_at")} for s in students]
+    response_counts = Counter(r["evaluator_id"] for r in rows)
+    by_status = [{"student_id": s["student_id"], "name": s["name"], "job_team": s["job_team"], "fair_team": s["fair_team"], "submitted_at": s.get("submitted_at"), "saved_count": response_counts.get(s["student_id"], 0)} for s in students]
     return {
         "kpi": {"total_students": len(students), "submitted": submitted, "not_submitted": len(students) - submitted, "submit_rate": round(submitted / len(students) * 100, 1), "responses": len(rows), "avg_chars": avg_chars, "avg_minutes": avg_time, "low_reliability": low_reliability},
         "keywords": [{"word": w, "count": c} for w, c in keywords],
         "rankings": rankings(),
         "submission_status": by_status,
     }
+
+@app.post("/api/admin/reopen")
+def admin_reopen(data: ReopenIn, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    user = current_user(authorization)
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    student_id = data.student_id.strip()
+    st = get_student(student_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="학생을 찾을 수 없습니다.")
+    with db() as con:
+        con.execute("UPDATE students SET submitted_at=NULL WHERE student_id=?", (student_id,))
+        con.commit()
+    return {"ok": True, "message": f"{st['name']} 학생의 상태를 임시저장/작성중으로 변경했습니다."}
 
 @app.get("/api/admin/responses")
 def admin_responses(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
