@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: gtep-survey-system
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GTEP_SECRET_KEY
+        generateValue: true
+      - key: GTEP_ADMIN_ID
+        value: admin
+      - key: GTEP_ADMIN_PASSWORD
+        value: 5750!
