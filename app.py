@@ -420,23 +420,29 @@ def startup() -> None:
 def unified_login(data: LoginIn) -> dict[str, Any]:
     username = data.username.strip()
     password = data.password.strip()
+
+    # Admin keeps the same credentials: admin / 5750!
     if username == ADMIN_ID and hmac.compare_digest(password, ADMIN_PASSWORD):
         return {"token": create_token({"role": "admin", "username": username}), "role": "admin"}
+
+    # Student login rule: ID = name, password = student_id.
+    # The UI still uses the generic labels "아이디" and "비밀번호".
     with db() as con:
-        row = con.execute("SELECT * FROM students WHERE student_id=? AND name=?", (username, password)).fetchone()
+        row = con.execute("SELECT * FROM students WHERE name=? AND student_id=?", (username, password)).fetchone()
     if not row:
         raise HTTPException(status_code=401, detail="아이디와 비밀번호를 확인해주세요.")
-    return {"token": create_token({"role": "student", "student_id": username}), "role": "student"}
+    return {"token": create_token({"role": "student", "student_id": row["student_id"]}), "role": "student"}
 
 @app.post("/api/student/login")
 def student_login(data: StudentLogin) -> dict[str, Any]:
+    # Backward-compatible endpoint, now also using ID = name, password = student_id.
     sid = data.student_id.strip()
     name = data.name.strip()
     with db() as con:
-        row = con.execute("SELECT * FROM students WHERE student_id=? AND name=?", (sid, name)).fetchone()
+        row = con.execute("SELECT * FROM students WHERE name=? AND student_id=?", (name, sid)).fetchone()
     if not row:
-        raise HTTPException(status_code=401, detail="학번과 이름을 확인해주세요.")
-    return {"token": create_token({"role": "student", "student_id": sid}), "student": dict(row)}
+        raise HTTPException(status_code=401, detail="아이디와 비밀번호를 확인해주세요.")
+    return {"token": create_token({"role": "student", "student_id": row["student_id"]}), "student": dict(row)}
 
 @app.post("/api/admin/login")
 def admin_login(data: AdminLogin) -> dict[str, str]:
