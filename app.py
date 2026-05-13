@@ -314,10 +314,72 @@ def tokenize(text: str) -> list[str]:
     return [w for w in words if w not in STOPWORDS and not w.isdigit()]
 
 
+
+
+def compact_text(text: str) -> str:
+    """Remove whitespace and punctuation for repeated-pattern checks."""
+    return re.sub(r"[^가-힣A-Za-z0-9]", "", text or "")
+
+
+def has_repeated_unit(text: str) -> bool:
+    """Detect answers made by repeating the same phrase, e.g. '장현수임시테스트' repeated many times."""
+    s = compact_text(text)
+    n = len(s)
+    if n < 60:
+        return False
+    # Exact repeated phrase check.
+    for size in range(2, min(60, n // 3) + 1):
+        if n % size == 0:
+            unit = s[:size]
+            if unit * (n // size) == s and n // size >= 3:
+                return True
+        # Also catch a repeated unit with a short incomplete suffix.
+        unit = s[:size]
+        repeats = n // size
+        if repeats >= 4 and s.startswith(unit * repeats) and len(s[repeats * size:]) < size:
+            return True
+    # Repeated chunk dominance check.
+    chunk = 10
+    chunks = [s[i:i+chunk] for i in range(0, n - chunk + 1, chunk)]
+    if len(chunks) >= 8:
+        most = Counter(chunks).most_common(1)[0][1]
+        if most / len(chunks) >= 0.65:
+            return True
+    return False
+
+
+def quality_issues(text: str, min_chars: int = 0) -> list[str]:
+    """Return quality problems that should not be treated as valid evaluation evidence."""
+    stripped = (text or "").strip()
+    issues: list[str] = []
+    if min_chars and len(stripped) < min_chars:
+        issues.append(f"최소 {min_chars}자 이상 작성해야 합니다.")
+    compact = compact_text(stripped)
+    if len(compact) >= 80:
+        unique_ratio = len(set(compact)) / max(len(compact), 1)
+        if unique_ratio < 0.12:
+            issues.append("동일하거나 유사한 글자가 과도하게 반복되어 평가 근거로 보기 어렵습니다.")
+    if has_repeated_unit(stripped):
+        issues.append("동일 문구가 반복되어 평가 근거로 보기 어렵습니다.")
+    tokens = tokenize(stripped)
+    if len(stripped) >= 120:
+        if len(tokens) <= 3:
+            issues.append("의미 있는 단어가 부족합니다. 구체적인 상황, 행동, 결과를 포함해주세요.")
+        elif tokens:
+            max_ratio = Counter(tokens).most_common(1)[0][1] / len(tokens)
+            if len(tokens) >= 8 and max_ratio >= 0.45:
+                issues.append("같은 단어가 지나치게 반복되어 평가 근거로 보기 어렵습니다.")
+    # Require at least one observable action or concrete context for long final answers.
+    action_markers = ["정리", "설명", "전달", "응대", "지원", "조율", "해결", "준비", "도움", "공유", "대응", "기록", "분석", "참여", "작성", "확인"]
+    context_markers = ["첫", "둘째", "오전", "오후", "부스", "바이어", "기업", "상담", "통역", "자료", "카탈로그", "제품", "회의", "현장", "준비", "역할"]
+    if len(stripped) >= 120 and not any(m in stripped for m in action_markers) and not any(m in stripped for m in context_markers):
+        issues.append("구체적인 행동이나 관찰 상황이 부족합니다.")
+    return issues
+
+
 def analyze_text(text: str, writing_time_sec: int, paste_count: int) -> dict[str, Any]:
     tokens = tokenize(text)
     token_counts = Counter(tokens)
-    lower = text.lower()
     has_specific_marker = sum(1 for p in ["첫", "둘째", "오전", "오후", "부스", "바이어", "기업", "상담", "통역", "자료", "카탈로그", "설명", "현장", "제품"] if p in text)
     has_action = sum(1 for p in ["정리", "설명", "전달", "응대", "지원", "조율", "해결", "준비", "도움", "공유", "대응", "기록", "분석"] if p in text)
     has_result = sum(1 for p in ["결과", "덕분", "이어", "줄", "개선", "완료", "도움", "원활", "해결", "성공"] if p in text)
@@ -336,6 +398,13 @@ def analyze_text(text: str, writing_time_sec: int, paste_count: int) -> dict[str
     paste_penalty = min(20, paste_count * 5)
     short_penalty = 20 if len(text) < 120 else 0
     reliability = max(0, min(100, specificity * 0.5 + evidence * 0.4 + min(writing_time_sec / 2, 10) - too_fast_penalty - paste_penalty - short_penalty))
+    issues = quality_issues(text)
+    if issues:
+        specificity = min(specificity, 5)
+        evidence = min(evidence, 5)
+        sentiment = min(sentiment, 50)
+        reliability = 0
+        tags = ["응답품질검토"]
     return {
         "specificity_score": round(specificity, 1),
         "evidence_score": round(evidence, 1),
@@ -343,10 +412,14 @@ def analyze_text(text: str, writing_time_sec: int, paste_count: int) -> dict[str
         "reliability_score": round(reliability, 1),
         "competency_tags": tags,
         "keywords": [w for w, _ in token_counts.most_common(8)],
+        "quality_issues": issues,
     }
 
 
 def score_response(row: sqlite3.Row) -> float:
+    # Invalid or repeated placeholder answers should not affect rankings.
+    if float(row["reliability_score"] or 0) <= 0 or float(row["evidence_score"] or 0) <= 5:
+        return 0.0
     return (
         row["evidence_score"] * 0.30
         + row["specificity_score"] * 0.20
@@ -514,14 +587,17 @@ def submit(data: SubmitIn, authorization: Optional[str] = Header(default=None)) 
     for item in data.responses:
         save_response(item, authorization)
     with db() as con:
-        saved = con.execute("SELECT target_type,target_id,char_count FROM responses WHERE evaluator_id=?", (st["student_id"],)).fetchall()
+        saved = con.execute("SELECT target_type,target_id,char_count,response_text FROM responses WHERE evaluator_id=?", (st["student_id"],)).fetchall()
         saved_map = {(r["target_type"], r["target_id"]): r["char_count"] for r in saved}
         missing = []
         for t in targets:
-            if saved_map.get((t["target_type"], t["target_id"]), 0) < t["min_chars"]:
+            key = (t["target_type"], t["target_id"])
+            if saved_map.get(key, 0) < t["min_chars"]:
                 missing.append(t["target_label"])
         if missing:
             raise HTTPException(status_code=400, detail="최소 글자 수 미달 또는 미작성 항목이 있습니다: " + ", ".join(missing[:5]))
+        # Quality problems such as repeated placeholder text do NOT block final submission.
+        # They are already scored with reliability_score=0 and excluded from rankings by score_response().
         con.execute("UPDATE students SET submitted_at=? WHERE student_id=?", (now_iso(), st["student_id"]))
         con.commit()
     return {"ok": True}
