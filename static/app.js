@@ -6,6 +6,8 @@ let studentState = null;
 let timers = {};
 let pasteCounts = {};
 let draft = {};
+let adminShowResponses = false;
+let responsesCache = null;
 
 async function api(path, options = {}) {
   const headers = {'Content-Type':'application/json', ...(options.headers || {})};
@@ -140,9 +142,13 @@ async function loadAdmin(){
       </div>
       <div style="height:16px"></div>
       <div class="card"><h2>제출 현황</h2>${statusTable(data.submission_status)}</div>
-      <div class="actions"><button class="secondary" onclick="downloadCsv()">응답 CSV 다운로드</button><button onclick="loadResponses()">원문 응답 보기</button></div>
+      <div class="actions"><button class="secondary" onclick="downloadCsv()">응답 CSV 다운로드</button><button onclick="loadResponses(true)">원문 응답 보기</button></div>
       <div id="responsesBox"></div>
     `;
+    if (adminShowResponses) {
+      renderResponsesBox(responsesCache);
+      loadResponses(false);
+    }
   } catch(e){ $('#adminContent').innerHTML = msg(e.message, true); }
 }
 function rankTable(items, type){
@@ -166,12 +172,28 @@ async function reopenStudent(studentId, name){
     await loadAdmin();
   } catch(e){ alert(e.message); }
 }
-async function loadResponses(){
-  const box = $('#responsesBox'); box.innerHTML = msg('원문을 불러오는 중입니다.');
+function safeTags(value){
+  try { return JSON.parse(value || '[]').join(', '); } catch(e) { return ''; }
+}
+function renderResponsesBox(data){
+  const box = $('#responsesBox');
+  if (!box) return;
+  if (!data) { box.innerHTML = msg('원문을 불러오는 중입니다.'); return; }
+  box.innerHTML = `<div class="card response-box" style="margin-top:16px"><div class="response-head"><h2>원문 응답</h2><button class="secondary small-btn" onclick="hideResponses()">닫기</button></div><table><thead><tr><th>평가자</th><th>대상</th><th>분석</th><th>응답</th></tr></thead><tbody>${data.responses.map(r=>`<tr><td>${esc(r.evaluator_name)}</td><td>${esc(r.target_label || r.target_id)}</td><td>구체성 ${r.specificity_score}<br>근거 ${r.evidence_score}<br>신뢰도 ${r.reliability_score}<br><span class="small">${esc(safeTags(r.competency_tags))}</span></td><td>${esc(r.response_text)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function hideResponses(){
+  adminShowResponses = false;
+  responsesCache = null;
+  const box = $('#responsesBox');
+  if (box) box.innerHTML = '';
+}
+async function loadResponses(markOpen=true){
+  if (markOpen) adminShowResponses = true;
+  renderResponsesBox(responsesCache);
   try {
-    const data = await api('/api/admin/responses');
-    box.innerHTML = `<div class="card response-box" style="margin-top:16px"><h2>원문 응답</h2><table><thead><tr><th>평가자</th><th>대상</th><th>분석</th><th>응답</th></tr></thead><tbody>${data.responses.map(r=>`<tr><td>${esc(r.evaluator_name)}</td><td>${esc(r.target_label || r.target_id)}</td><td>구체성 ${r.specificity_score}<br>근거 ${r.evidence_score}<br>신뢰도 ${r.reliability_score}<br><span class="small">${esc(JSON.parse(r.competency_tags||'[]').join(', '))}</span></td><td>${esc(r.response_text)}</td></tr>`).join('')}</tbody></table></div>`;
-  } catch(e){ box.innerHTML = msg(e.message, true); }
+    responsesCache = await api('/api/admin/responses');
+    renderResponsesBox(responsesCache);
+  } catch(e){ const box = $('#responsesBox'); if (box) box.innerHTML = msg(e.message, true); }
 }
 async function downloadCsv(){
   try {

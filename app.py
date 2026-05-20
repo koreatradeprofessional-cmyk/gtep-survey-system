@@ -4,6 +4,7 @@ import base64
 import csv
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -669,18 +670,56 @@ def export_csv(authorization: Optional[str] = Header(default=None)):
     user = current_user(authorization)
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
+    students = get_students()
+    student_map = {s["student_id"]: s for s in students}
     with db() as con:
-        rows = con.execute("SELECT * FROM responses ORDER BY evaluator_id,target_type,target_id").fetchall()
-    headers = ["evaluator_id", "target_type", "target_id", "response_text", "char_count", "writing_time_sec", "paste_count", "specificity_score", "evidence_score", "sentiment_score", "reliability_score", "competency_tags", "keywords", "updated_at"]
+        rows = con.execute(
+            """
+            SELECT r.*, s.name AS evaluator_name, s.job_team AS evaluator_job_team, s.fair_team AS evaluator_fair_team
+            FROM responses r JOIN students s ON r.evaluator_id=s.student_id
+            ORDER BY r.evaluator_id,target_type,target_id
+            """
+        ).fetchall()
+
+    headers = [
+        "평가자ID", "평가자명", "평가자직무팀", "평가자박람회팀",
+        "평가대상유형", "평가대상ID", "평가대상명",
+        "응답내용", "글자수", "작성시간초", "붙여넣기횟수",
+        "구체성점수", "행동근거점수", "감성점수", "신뢰도점수",
+        "역량태그", "키워드", "수정시각"
+    ]
+
+    def target_label(row):
+        target_type = row["target_type"]
+        target_id = row["target_id"]
+        if target_type in ("job_member", "fair_member") and target_id in student_map:
+            return student_map[target_id]["name"]
+        return target_id
+
     def stream():
-        yield ",".join(headers) + "\n"
+        # UTF-8 BOM makes Korean text open correctly in Microsoft Excel.
+        yield "\ufeff"
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(headers)
+        yield buf.getvalue()
         for r in rows:
-            vals = []
-            for h in headers:
-                v = str(r[h] or "").replace('"', '""')
-                vals.append(f'"{v}"')
-            yield ",".join(vals) + "\n"
-    return StreamingResponse(stream(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=gtep_responses.csv"})
+            buf = io.StringIO()
+            writer = csv.writer(buf, lineterminator="\n")
+            writer.writerow([
+                r["evaluator_id"], r["evaluator_name"], r["evaluator_job_team"], r["evaluator_fair_team"],
+                r["target_type"], r["target_id"], target_label(r),
+                r["response_text"], r["char_count"], r["writing_time_sec"], r["paste_count"],
+                r["specificity_score"], r["evidence_score"], r["sentiment_score"], r["reliability_score"],
+                r["competency_tags"], r["keywords"], r["updated_at"]
+            ])
+            yield buf.getvalue()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": "attachment; filename=gtep_responses_excel.csv"},
+    )
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
